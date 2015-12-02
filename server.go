@@ -8,12 +8,11 @@ import (
 	"github.com/kardianos/osext"
 	"gopkg.in/errgo.v1"
 	"io"
-	//	"io/ioutil"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath
-	"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,6 +41,7 @@ func html2pdf(args ...string) error {
 
 	var b bytes.Buffer
 	cmd.Stderr = &b
+	fmt.Println(cmdSlice)
 	if err := cmd.Run(); err != nil {
 		return errgo.New(b.String())
 	}
@@ -86,7 +86,7 @@ func pdfMerge(fileNames ...string) ([]byte, error) {
 	if err != nil {
 		return nil, errgo.New(b.String())
 	}
-	return out.Bytes(), err
+	return out.Bytes(), nil
 }
 
 func responseError(w http.ResponseWriter, code int, message string) {
@@ -96,7 +96,7 @@ func responseError(w http.ResponseWriter, code int, message string) {
 }
 func start() {
 	http.HandleFunc("/", WriteLog(func(w http.ResponseWriter, r *http.Request) {
-		b, err := func() ([]byte, error) {
+		bres, err := func() ([]byte, error) {
 			if err := r.ParseMultipartForm(64 << 20); err != nil {
 				return nil, errgo.Newf("Parse multipart - error: %s", err.Error())
 			}
@@ -110,10 +110,12 @@ func start() {
 				return nil, errgo.Newf("Make dir \"%s\" - error: %s", dirName, err.Error())
 			}
 
-			defer os.RemoveAll(dirName)
+			if debug := r.FormValue("debug"); debug != "Y" {
+				defer os.RemoveAll(dirName)
+			}
 
 			ds := r.FormValue("double_side")
-			fileNames := make([]string, 0)
+			//fileNames := make([]string, 0)
 			for k, v := range r.MultipartForm.File["file"] {
 				args := []string{"--load-error-handling", "ignore"}
 
@@ -170,18 +172,25 @@ func start() {
 				if err := html2pdf(args...); err != nil {
 					return nil, errgo.Newf("File \"%s\" convert - error: %s", v.Filename, err.Error())
 				}
-				fileNames = append(fileNames, fileName)
+
 				if ds == "Y" {
 					pc, err2 := pdfPageCount(fileName)
 					if err2 != nil {
 						return nil, errgo.Newf("File \"%s\" page count retrive - error: %s", fileName, err2.Error())
 					}
 					if pc%2 == 1 {
-						fileNames = append(fileNames, basePath+"\\files\\empty.pdf")
+						b, err3 := pdfMerge(fileName, basePath+"\\files\\empty.pdf")
+						if err3 != nil {
+							return nil, errgo.Newf("Add page to file \"%s\" - error: %s", fileName, err3.Error())
+						}
+						err3 = ioutil.WriteFile(fileName, b, 0644)
+						if err3 != nil {
+							return nil, errgo.Newf("Save buffer to file \"%s\" - error: %s", fileName, err3.Error())
+						}
 					}
 				}
 			}
-			b, err := pdfMerge(fileNames...)
+			b, err := pdfMerge(dirName + "\\*.pdf")
 			if err != nil {
 				return nil, errgo.Newf("Merge files - error: %s", err.Error())
 			}
@@ -193,7 +202,7 @@ func start() {
 			return
 		}
 		w.Header().Set("Content-type", "application/pdf")
-		w.Write(b)
+		w.Write(bres)
 	}, basePath+"\\log\\"))
 	go http.ListenAndServe(":17000", nil)
 }
