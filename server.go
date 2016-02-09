@@ -8,7 +8,7 @@ import (
 	"github.com/kardianos/osext"
 	"gopkg.in/errgo.v1"
 	"io"
-	"io/ioutil"
+	//	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
@@ -67,14 +67,14 @@ func pdfPageCount(fname string) (int, error) {
 	return strconv.Atoi(strings.Replace(s[0], "NumberOfPages: ", "", -1))
 }
 
-func pdfMerge(fileNames ...string) ([]byte, error) {
+func pdfMerge(outputfileName string, fileNames ...string) ([]byte, error) {
 	cmdSlice := []string{}
 
 	for _, line := range fileNames {
 		cmdSlice = append(cmdSlice, line)
 	}
 	cmdSlice = append(cmdSlice, "output")
-	cmdSlice = append(cmdSlice, "-")
+	cmdSlice = append(cmdSlice, outputfileName)
 
 	cmd := exec.Command(basePath+"\\pdftk.exe", cmdSlice...)
 
@@ -87,6 +87,36 @@ func pdfMerge(fileNames ...string) ([]byte, error) {
 		return nil, errgo.New(b.String())
 	}
 	return out.Bytes(), nil
+}
+
+func pdfPrint(printerName, outputfileName string) error {
+	//cmdSlice := []string{"/c", "print", "/D:" + printerName, outputfileName}
+	cmdSlice := []string{"-dPrinted",
+		"-dBATCH",
+		"-dNOPAUSE",
+		"-dNOSAFER",
+		"-dINITDEBUG",
+		"-dSETPDDEBUG",
+		"-q",
+		"-sDEVICE=laserjet",
+		"-sOutputFile=" + printerName,
+		//"\"" + outputfileName + "\""
+		outputfileName}
+
+	//cmd := exec.Command("cmd.exe", cmdSlice...)
+
+	cmd := exec.Command(basePath+"\\gswin64c.exe", cmdSlice...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	var b bytes.Buffer
+	cmd.Stderr = &b
+	err := cmd.Run()
+	if err != nil {
+		fmt.Println(basePath+"\\gswin64c.exe", cmdSlice)
+		fmt.Println(out.String())
+		fmt.Println(b.String())
+	}
+	return err
 }
 
 func responseError(w http.ResponseWriter, code int, message string) {
@@ -179,18 +209,38 @@ func start() {
 						return nil, errgo.Newf("File \"%s\" page count retrive - error: %s", fileName, err2.Error())
 					}
 					if pc%2 == 1 {
-						b, err3 := pdfMerge(fileName, basePath+"\\files\\empty.pdf")
+						_, err3 := pdfMerge(fileName, fileName, basePath+"\\files\\empty.pdf")
 						if err3 != nil {
 							return nil, errgo.Newf("Add page to file \"%s\" - error: %s", fileName, err3.Error())
 						}
-						err3 = ioutil.WriteFile(fileName, b, 0644)
-						if err3 != nil {
-							return nil, errgo.Newf("Save buffer to file \"%s\" - error: %s", fileName, err3.Error())
-						}
+						//						b, err3 := pdfMerge(fileName, basePath+"\\files\\empty.pdf")
+						//						if err3 != nil {
+						//							return nil, errgo.Newf("Add page to file \"%s\" - error: %s", fileName, err3.Error())
+						//						}
+						//						err3 = ioutil.WriteFile(fileName, b, 0644)
+						//						if err3 != nil {
+						//							return nil, errgo.Newf("Save buffer to file \"%s\" - error: %s", fileName, err3.Error())
+						//						}
 					}
 				}
 			}
-			b, err := pdfMerge(dirName + "\\*.pdf")
+			printerName := r.FormValue("printer_name")
+			if printerName != "" {
+				_, err := pdfMerge(dirName+"\\result.pdf", dirName+"\\*.pdf")
+				if err != nil {
+					return nil, errgo.Newf("Merge files - error: %s", err.Error())
+				}
+				printerName := r.FormValue("printer_name")
+				if printerName == "" {
+					return nil, errgo.Newf("Print files - error: %s", "Printer name is empty.")
+				}
+				if err := pdfPrint(printerName, dirName+"\\result.pdf"); err != nil {
+					return nil, errgo.Newf("Print files - error: %s", err.Error())
+				}
+				return nil, nil
+
+			}
+			b, err := pdfMerge("-", dirName+"\\*.pdf")
 			if err != nil {
 				return nil, errgo.Newf("Merge files - error: %s", err.Error())
 			}
@@ -200,6 +250,10 @@ func start() {
 		if err != nil {
 			responseError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if bres != nil {
+			w.Header().Set("Content-type", "text/plain")
+			w.Write([]byte("OK"))
 		}
 		w.Header().Set("Content-type", "application/pdf")
 		w.Write(bres)
