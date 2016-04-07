@@ -3,12 +3,15 @@ package main
 
 import (
 	"bytes"
-	"code.google.com/p/go-uuid/uuid"
 	"fmt"
+	"io"
+
+	"code.google.com/p/go-uuid/uuid"
 	"github.com/kardianos/osext"
 	"gopkg.in/errgo.v1"
-	"io"
 	//	"io/ioutil"
+	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"os"
 	"os/exec"
@@ -124,6 +127,27 @@ func responseError(w http.ResponseWriter, code int, message string) {
 	w.WriteHeader(code)
 	w.Write([]byte(message))
 }
+
+func val2File(afilename string, avalue string) error {
+	f, err := os.OpenFile(afilename, os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	base64Value, err1 := hex.DecodeString(avalue)
+	if err1 != nil {
+		return err1
+	}
+
+	decodedValue, err2 := base64.StdEncoding.DecodeString(string(base64Value))
+	if err2 != nil {
+		return err2
+	}
+	io.WriteString(f, string(decodedValue))
+	return nil
+}
+
 func start() {
 	http.HandleFunc("/", WriteLog(func(w http.ResponseWriter, r *http.Request) {
 		bres, err := func() ([]byte, error) {
@@ -146,7 +170,9 @@ func start() {
 
 			ds := r.FormValue("double_side")
 			//fileNames := make([]string, 0)
+
 			for k, v := range r.MultipartForm.File["file"] {
+				curFileName := v.Filename
 				args := []string{"--load-error-handling", "ignore"}
 
 				if v, ok := r.MultipartForm.Value["orientation"]; ok {
@@ -183,6 +209,31 @@ func start() {
 					args = append(args, "--margin-right")
 					args = append(args, v[k])
 				}
+				if v, ok := r.MultipartForm.Value["footer-spacing"]; ok {
+					args = append(args, "--footer-spacing")
+					args = append(args, v[k])
+				}
+				if v, ok := r.MultipartForm.Value["header-spacing"]; ok {
+					args = append(args, "--header-spacing")
+					args = append(args, v[k])
+				}
+
+				if v, ok := r.MultipartForm.Value["header-html"]; ok {
+					headerFileName := fmt.Sprintf("%s\\%s.header.html", dirName, curFileName)
+					args = append(args, "--header-html")
+					args = append(args, headerFileName)
+					if err := val2File(headerFileName, v[k]); err != nil {
+						return nil, errgo.Newf("File \"%s\" save - error: %s", headerFileName, err.Error())
+					}
+				}
+				if v, ok := r.MultipartForm.Value["footer-html"]; ok {
+					footerFileName := fmt.Sprintf("%s\\%s.footer.html", dirName, curFileName)
+					args = append(args, "--footer-html")
+					args = append(args, footerFileName)
+					if err := val2File(footerFileName, v[k]); err != nil {
+						return nil, errgo.Newf("File \"%s\" save - error: %s", footerFileName, err.Error())
+					}
+				}
 
 				f, err := v.Open()
 				if err != nil {
@@ -209,9 +260,12 @@ func start() {
 						return nil, errgo.Newf("File \"%s\" page count retrive - error: %s", fileName, err2.Error())
 					}
 					if pc%2 == 1 {
-						_, err3 := pdfMerge(fileName, fileName, basePath+"\\files\\empty.pdf")
-						if err3 != nil {
-							return nil, errgo.Newf("Add page to file \"%s\" - error: %s", fileName, err3.Error())
+						if err := os.Rename(fileName, fileName+".spdf"); err != nil {
+							return nil, errgo.Newf("Rename file \"%s\" - error: %s", fileName, err.Error())
+						}
+
+						if _, err := pdfMerge(fileName, fileName+".spdf", basePath+"\\files\\empty.pdf"); err != nil {
+							return nil, errgo.Newf("Add page to file \"%s\" - error: %s", fileName, err.Error())
 						}
 						//						b, err3 := pdfMerge(fileName, basePath+"\\files\\empty.pdf")
 						//						if err3 != nil {
@@ -251,9 +305,10 @@ func start() {
 			responseError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if bres != nil {
+		if bres == nil {
 			w.Header().Set("Content-type", "text/plain")
 			w.Write([]byte("OK"))
+			return
 		}
 		w.Header().Set("Content-type", "application/pdf")
 		w.Write(bres)
